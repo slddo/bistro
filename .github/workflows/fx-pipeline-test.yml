@@ -36,7 +36,8 @@ jobs:
             pandas==2.1.4 \
             matplotlib==3.10.0 \
             scipy==1.11.4 \
-            statsmodels==0.14.6
+            statsmodels==0.14.6 \
+            openpyxl==3.1.2
 
       - name: Show data summary
         run: |
@@ -59,9 +60,9 @@ jobs:
         run: |
           python script/forecast_jpyusd.py --test
 
-      - name: Upload figures as artifact
+      - name: Upload results (figures + Excel)
         uses: actions/upload-artifact@v4
         with:
-          name: fx-forecast-figures
+          name: fx-forecast-results
           path: script/figures/
           retention-days: 30

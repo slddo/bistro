@@ -241,6 +241,7 @@ def main(dry_run: bool = False):
         print("  To run full inference, execute without --test flag in an")
         print("  environment with uni2ts and model weights installed.")
         _save_test_plot(df_m, target_col, OUT_DIR)
+        _save_excel(df_m, target_col, next_month, OUT_DIR)
         return
 
     # ── 4. Model inference ────────────────────────────────────────────────────
@@ -478,7 +479,124 @@ def main(dry_run: bool = False):
     plt.close(fig_lv)
     print("  Saved: jpyusd_live_forecast.png")
 
+    _save_excel(
+        df_m, target_col, next_month, OUT_DIR,
+        rmse_univ=rmse_univ,
+        rmse_mv=rmse_mv_lst,
+        bistro_univ=bistro_univ,
+        bistro_mv=bistro_mv,
+        live_val=live_val,
+        live_lo=live_lo,
+        live_hi=live_hi,
+    )
+
     print("\nAll done.")
+
+
+def _save_excel(
+    df_m, target_col, next_month, out_dir,
+    *,
+    rmse_univ=None,
+    rmse_mv=None,
+    bistro_univ=None,
+    bistro_mv=None,
+    live_val=None,
+    live_lo=None,
+    live_hi=None,
+):
+    """Write analysis results to a multi-sheet Excel workbook."""
+    path = out_dir / "jpyusd_results.xlsx"
+
+    log_ret = (df_m[target_col] / df_m[target_col].shift(1)).apply(
+        lambda x: float("nan") if x != x else __import__("math").log(x) * 100
+    )
+
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+
+        # ── Sheet 1: 月資料 ──────────────────────────────────────────────────
+        df_out = df_m[["usdjpy", "us_10y", "jp_10y", "spread", "vix"]].copy()
+        df_out.index = df_out.index.to_timestamp()
+        df_out.index.name = "月份"
+        df_out.columns = ["USD/JPY", "美10年期(%)", "日10年期(%)", "利差(%)", "VIX"]
+        df_out["月對數報酬(%)"] = log_ret.values
+        df_out.to_excel(writer, sheet_name="月資料")
+
+        # ── Sheet 2: 統計摘要 ────────────────────────────────────────────────
+        lr = df_out["月對數報酬(%)"].dropna()
+        stats = pd.DataFrame([
+            {"指標": "資料起始",       "數值": str(df_m.index[0])},
+            {"指標": "資料結束",       "數值": str(df_m.index[-1])},
+            {"指標": "月資料筆數",     "數值": len(df_m)},
+            {"指標": "最後 USD/JPY",   "數值": round(df_m[target_col].iloc[-1], 2)},
+            {"指標": "預測目標月份",   "數值": str(next_month)},
+            {"指標": "月報酬均值(%)",  "數值": round(float(lr.mean()), 4)},
+            {"指標": "月報酬標準差(%)", "數值": round(float(lr.std()), 4)},
+            {"指標": "年化波動率(%)",  "數值": round(float(lr.std() * 12 ** 0.5), 2)},
+            {"指標": "最後美日利差(%)", "數值": round(float(df_m["spread"].iloc[-1]), 3)},
+        ])
+        stats.to_excel(writer, sheet_name="統計摘要", index=False)
+
+        # ── Sheet 3: 回測_單變數 ─────────────────────────────────────────────
+        if rmse_univ:
+            df_rmse_u = pd.DataFrame(rmse_univ).rename(columns={
+                "window": "窗口", "test_start": "預測起始", "test_end": "預測結束",
+                "rmse_bistro": "RMSE_BISTRO", "rmse_ar1": "RMSE_AR1",
+                "r_rmse": "R-RMSE(BISTRO/AR1)", "n_valid": "有效月數",
+            })
+            df_rmse_u.to_excel(writer, sheet_name="回測_單變數_RMSE", index=False)
+
+            if bistro_univ:
+                frames = []
+                for w, dfw in bistro_univ.items():
+                    tmp = dfw[["bistro_pred", "bistro_lo", "bistro_hi", "ar1_pred"]].copy()
+                    tmp.index = tmp.index.to_timestamp()
+                    tmp.index.name = "月份"
+                    tmp.columns = ["BISTRO中位數", "90%CI下界", "90%CI上界", "AR(1)"]
+                    tmp.insert(0, "窗口", w)
+                    frames.append(tmp)
+                pd.concat(frames).to_excel(writer, sheet_name="回測_單變數_明細")
+
+        # ── Sheet 4: 回測_多變數 ─────────────────────────────────────────────
+        if rmse_mv:
+            df_rmse_m = pd.DataFrame(rmse_mv).rename(columns={
+                "window": "窗口", "test_start": "預測起始", "test_end": "預測結束",
+                "rmse_bistro_mv": "RMSE_BISTRO_MV", "rmse_ar1": "RMSE_AR1",
+                "r_rmse": "R-RMSE(BISTRO_MV/AR1)",
+            })
+            df_rmse_m.to_excel(writer, sheet_name="回測_多變數_RMSE", index=False)
+
+            if bistro_mv:
+                frames = []
+                for w, dfw in bistro_mv.items():
+                    tmp = dfw[["bistro_mv_pred", "bistro_mv_lo", "bistro_mv_hi", "ar1_pred"]].copy()
+                    tmp.index = tmp.index.to_timestamp()
+                    tmp.index.name = "月份"
+                    tmp.columns = ["BISTRO_MV中位數", "90%CI下界", "90%CI上界", "AR(1)"]
+                    tmp.insert(0, "窗口", w)
+                    frames.append(tmp)
+                pd.concat(frames).to_excel(writer, sheet_name="回測_多變數_明細")
+
+        # ── Sheet 5: Live 預測 ───────────────────────────────────────────────
+        live_rows = [
+            {"項目": "預測月份",          "數值": str(next_month)},
+            {"項目": "最後實際值月份",    "數值": str(df_m.index[-1])},
+            {"項目": "最後實際 USD/JPY",  "數值": round(float(df_m[target_col].iloc[-1]), 2)},
+        ]
+        if live_val is not None:
+            chg = live_val - df_m[target_col].iloc[-1]
+            live_rows += [
+                {"項目": "預測中位數 USD/JPY", "數值": round(live_val, 2)},
+                {"項目": "90% CI 下界",        "數值": round(live_lo, 2)},
+                {"項目": "90% CI 上界",        "數值": round(live_hi, 2)},
+                {"項目": "預期變動量",          "數值": round(chg, 2)},
+                {"項目": "預期變動率(%)",       "數值": round(chg / df_m[target_col].iloc[-1] * 100, 3)},
+            ]
+        else:
+            live_rows.append({"項目": "預測結果", "數值": "需完整執行（含模型推論）"})
+
+        pd.DataFrame(live_rows).to_excel(writer, sheet_name="Live預測", index=False)
+
+    print(f"  Saved: {path.name}")
 
 
 def _save_test_plot(df_m, target_col, out_dir):
