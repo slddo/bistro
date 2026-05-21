@@ -1,0 +1,67 @@
+name: FX Pipeline Test
+
+# Run on push to the feature branch, or trigger manually
+on:
+  push:
+    branches:
+      - claude/bistro-framework-research-ctj0S
+    paths:
+      - 'script/forecast_jpyusd.py'
+      - 'src/fx_preprocessing_util.py'
+      - 'src/preprocessing_util.py'
+      - 'data/usdjpy_panel.csv'
+      - '.github/workflows/fx-pipeline-test.yml'
+  workflow_dispatch:
+
+jobs:
+  test-pipeline:
+    name: Data Pipeline Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            numpy==1.26.4 \
+            pandas==2.1.4 \
+            matplotlib==3.10.0 \
+            scipy==1.11.4 \
+            statsmodels==0.14.6
+
+      - name: Show data summary
+        run: |
+          python - <<'EOF'
+          import pandas as pd
+          df = pd.read_csv('data/usdjpy_panel.csv', index_col=0, parse_dates=True)
+          df_m = df[['usdjpy','us_10y','jp_10y','spread','vix']].dropna(subset=['usdjpy'])
+          df_m = df_m.resample('M').last()
+          print(f"Raw daily rows   : {len(df)}")
+          print(f"Monthly rows     : {len(df_m)}")
+          print(f"Date range       : {df_m.index[0].strftime('%Y-%m')} → {df_m.index[-1].strftime('%Y-%m')}")
+          print(f"Last USD/JPY     : {df_m['usdjpy'].iloc[-1]:.2f}")
+          print(f"Last spread (%)  : {df_m['spread'].iloc[-1]:.3f}")
+          import numpy as np
+          lr = np.log(df_m['usdjpy'] / df_m['usdjpy'].shift(1)) * 100
+          print(f"Monthly vol (%/m): {lr.std():.3f}  (ann. {lr.std()*12**0.5:.2f}%)")
+          EOF
+
+      - name: Run forecast pipeline (--test mode)
+        run: |
+          python script/forecast_jpyusd.py --test
+
+      - name: Upload figures as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fx-forecast-figures
+          path: script/figures/
+          retention-days: 30
