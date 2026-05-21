@@ -49,7 +49,8 @@ jobs:
             pandas==2.1.4 \
             matplotlib==3.10.0 \
             scipy==1.11.4 \
-            statsmodels==0.14.6
+            statsmodels==0.14.6 \
+            openpyxl==3.1.2
 
       - name: Show run parameters
         run: |
@@ -121,9 +122,9 @@ jobs:
           print(df_m[['usdjpy', 'us_10y', 'jp_10y', 'spread']].tail(6).to_string())
           EOF
 
-      - name: Upload figures
+      - name: Upload results (figures + Excel)
         uses: actions/upload-artifact@v4
         with:
-          name: jpyusd-figures-${{ github.run_number }}
+          name: jpyusd-results-${{ github.run_number }}
           path: script/figures/
           retention-days: 30
