@@ -8,9 +8,15 @@ FX rates are used as raw levels or optionally converted to log returns.
 
 import numpy as np
 import pandas as pd
+from typing import Tuple
 
 from preprocessing_util import (
     DailyInferencePrep,
+    _standardize_period_index,
+    _period_to_period_end_timestamp,
+    pad_future_markers,
+    forward_fill_to_daily,
+    detect_and_impute_gaps,
     prepare_yoy_monthly_for_daily_inference,
 )
 
@@ -92,3 +98,68 @@ def prepare_fx_monthly_for_inference(
         window_distance_patches=window_distance_patches,
         tolerance_days=tolerance_days,
     )
+
+
+def prepare_live_forecast(
+    df_monthly: pd.DataFrame,
+    *,
+    target_col: str,
+    freq: str = "M",
+    use_log_returns: bool = False,
+    ctx_patches: int = 120,
+    steps_per_period: int = 32,
+    tolerance_days: int = 10,
+) -> Tuple[pd.DataFrame, "pd.Period", int]:
+    """
+    Prepare data for a single live forecast from the last available data point.
+
+    Because there is no future actual data, the standard rolling-window approach
+    cannot be used.  This function pads one period of marker values after the
+    last observation so that PandasDataset + split() + generate_instances()
+    can create exactly one inference window that forecasts the next period.
+
+    Parameters
+    ----------
+    df_monthly : DataFrame with period/datetime index and target FX rate column
+    target_col : column name of the FX rate to forecast
+    freq : pandas frequency string ('M' for monthly)
+    use_log_returns : if True, convert levels to log returns before forecasting
+    ctx_patches : number of periods of history for the model context
+    steps_per_period : patch size in days (32 ≈ one calendar month)
+    tolerance_days : max allowed timestamp snap for alignment
+
+    Returns
+    -------
+    (daily_df, cutoff_daily, ctx_steps)
+      daily_df     : padded daily DataFrame ready for PandasDataset
+      cutoff_daily : pd.Period (daily freq) to pass to split()
+      ctx_steps    : integer context steps for generate_instances()
+    """
+    df = df_monthly[[target_col]].copy()
+
+    if use_log_returns:
+        df[target_col] = compute_log_returns(df[target_col])
+        df = df.dropna()
+
+    # Standardise to PeriodIndex then convert to DatetimeIndex
+    df.index = _standardize_period_index(df.index, freq=freq)
+    df_dt = df.copy()
+    if freq == "M":
+        df_dt.index = df_dt.index.to_timestamp(freq="M")
+    elif freq == "Q":
+        df_dt.index = df_dt.index.to_timestamp(freq="Q")
+    else:
+        df_dt.index = df_dt.index.to_timestamp()
+
+    df_dt = detect_and_impute_gaps(df_dt.dropna(), freq=freq, tolerance_days=tolerance_days)
+
+    # Pad one future period with marker values so the split point falls inside
+    padded = pad_future_markers(df_dt, target_col=target_col, n_pad_periods=1, freq=freq)
+    daily_df = forward_fill_to_daily(padded, patch_size_days=steps_per_period)
+
+    # Cutoff = last day of the last actual month
+    last_actual_ts = df_dt.index[-1]
+    cutoff_daily = pd.Period(last_actual_ts.strftime("%Y-%m-%d"))
+    ctx_steps = ctx_patches * steps_per_period
+
+    return daily_df, cutoff_daily, ctx_steps
