@@ -1,0 +1,129 @@
+name: FX Forecast Manual Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      forecast_start_date:
+        description: 'Backtest start date (YYYY-MM-DD)'
+        required: true
+        default: '2024-01-01'
+      rolling_windows:
+        description: 'Number of backtest windows'
+        required: true
+        default: '3'
+        type: choice
+        options:
+          - '2'
+          - '3'
+          - '4'
+      window_distance:
+        description: 'Months between windows'
+        required: true
+        default: '2'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+
+jobs:
+  forecast:
+    name: Run USD/JPY Forecast Pipeline
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            numpy==1.26.4 \
+            pandas==2.1.4 \
+            matplotlib==3.10.0 \
+            scipy==1.11.4 \
+            statsmodels==0.14.6
+
+      - name: Show run parameters
+        run: |
+          echo "========================================"
+          echo "  USD/JPY Forecast — Manual Run"
+          echo "========================================"
+          echo "  Backtest start : ${{ inputs.forecast_start_date }}"
+          echo "  Rolling windows: ${{ inputs.rolling_windows }}"
+          echo "  Window distance: ${{ inputs.window_distance }} months"
+          echo "========================================"
+
+      - name: Patch script with user parameters
+        run: |
+          python - <<'EOF'
+          import re, pathlib
+
+          path = pathlib.Path('script/forecast_jpyusd.py')
+          src  = path.read_text()
+
+          src = re.sub(
+              r"FORECAST_START\s*=\s*\"[^\"]+\"",
+              f'FORECAST_START   = "${{ inputs.forecast_start_date }}"',
+              src,
+          )
+          src = re.sub(
+              r"ROLLING_WINDOWS\s*=\s*\d+",
+              f'ROLLING_WINDOWS  = ${{ inputs.rolling_windows }}',
+              src,
+          )
+          src = re.sub(
+              r"WINDOW_DISTANCE\s*=\s*\d+",
+              f'WINDOW_DISTANCE  = ${{ inputs.window_distance }}',
+              src,
+          )
+
+          path.write_text(src)
+          print("Parameters patched into script.")
+          EOF
+
+      - name: Run data pipeline (--test mode)
+        run: |
+          python script/forecast_jpyusd.py --test
+
+      - name: Print data summary
+        run: |
+          python - <<'EOF'
+          import pandas as pd, numpy as np
+
+          df = pd.read_csv('data/usdjpy_panel.csv', index_col=0, parse_dates=True)
+          cols = ['usdjpy', 'us_10y', 'jp_10y', 'spread', 'vix']
+          df_m = df[cols].dropna(subset=['usdjpy']).resample('M').last()
+          df_m.index = df_m.index.to_period('M')
+
+          lr = np.log(df_m['usdjpy'] / df_m['usdjpy'].shift(1)) * 100
+
+          print("========================================")
+          print("  Data Summary")
+          print("========================================")
+          print(f"  Monthly obs      : {len(df_m)}")
+          print(f"  Date range       : {df_m.index[0]} → {df_m.index[-1]}")
+          print(f"  Last USD/JPY     : {df_m['usdjpy'].iloc[-1]:.2f}")
+          print(f"  Last spread (%)  : {df_m['spread'].iloc[-1]:.3f}")
+          print(f"  Monthly vol (%/m): {lr.std():.3f}")
+          print(f"  Annual vol (%)   : {lr.std() * 12**0.5:.2f}")
+          print(f"  Live forecast    : {df_m.index[-1] + 1}")
+          print("========================================")
+
+          print("\n  Last 6 months:")
+          print(df_m[['usdjpy', 'us_10y', 'jp_10y', 'spread']].tail(6).to_string())
+          EOF
+
+      - name: Upload figures
+        uses: actions/upload-artifact@v4
+        with:
+          name: jpyusd-figures-${{ github.run_number }}
+          path: script/figures/
+          retention-days: 30
